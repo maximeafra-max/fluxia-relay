@@ -1,0 +1,17 @@
+# Environnements virtuels Python
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Base de données locale (ne doit jamais être sur GitHub)
+instance/
+relay.db
+*.db
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+
+# Variables d'environnement sensibles
+.env
