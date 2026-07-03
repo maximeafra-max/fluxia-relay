@@ -13,6 +13,22 @@ from flask_sqlalchemy import SQLAlchemy
 app = Flask(__name__)
 
 # ───────────────────────────────────────────
+#  CORS — autoriser toutes les origines
+#  (nécessaire pour Capacitor et navigateur)
+# ───────────────────────────────────────────
+@app.after_request
+def ajouter_cors(response):
+    response.headers['Access-Control-Allow-Origin']  = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response
+
+@app.route('/', defaults={'path': ''}, methods=['OPTIONS'])
+@app.route('/<path:path>', methods=['OPTIONS'])
+def options_handler(path):
+    return jsonify({}), 200
+
+# ───────────────────────────────────────────
 #  CONFIGURATION BASE DE DONNÉES
 # ───────────────────────────────────────────
 # Render fournit une variable DATABASE_URL en production.
