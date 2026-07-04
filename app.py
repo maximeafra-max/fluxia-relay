@@ -90,6 +90,62 @@ class Message(db.Model):
             'date':    self.created_at.isoformat(),
         }
 
+class InventaireCache(db.Model):
+    """Cache de l'inventaire du desktop, lisible par le mobile."""
+    __tablename__ = 'inventaire_cache'
+
+    id         = db.Column(db.Integer, primary_key=True)
+    token      = db.Column(db.String(64), nullable=False, unique=True)
+    produits   = db.Column(db.Text, nullable=False, default='[]')  # JSON
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class ModifMobile(db.Model):
+    """Modifications de produits envoyées par le mobile, en attente d'application par le desktop."""
+    __tablename__ = 'modifs_mobile'
+
+    id         = db.Column(db.Integer, primary_key=True)
+    token      = db.Column(db.String(64), nullable=False)
+    produit_id = db.Column(db.Integer, nullable=False)
+    data       = db.Column(db.Text, nullable=False)  # JSON des champs modifiés
+    appliquee  = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        import json
+        return {
+            'id':         self.id,
+            'produit_id': self.produit_id,
+            'data':       json.loads(self.data),
+        }
+
+
+
+
+# ───────────────────────────────────────────
+#  STOCKAGE PRODUITS (cache envoyé par le desktop)
+# ───────────────────────────────────────────
+class CacheProduits(db.Model):
+    __tablename__ = 'cache_produits'
+
+    id         = db.Column(db.Integer, primary_key=True)
+    token      = db.Column(db.String(64), nullable=False, unique=True)
+    produits   = db.Column(db.Text, nullable=False)  # JSON
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+# ───────────────────────────────────────────
+#  MODIFICATIONS EN ATTENTE (mobile → desktop)
+# ───────────────────────────────────────────
+class ModifProduit(db.Model):
+    __tablename__ = 'modifs_produits'
+
+    id         = db.Column(db.Integer, primary_key=True)
+    token      = db.Column(db.String(64), nullable=False)
+    produit_id = db.Column(db.Integer, nullable=False)
+    donnees    = db.Column(db.Text, nullable=False)  # JSON
+    appliquee  = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 # Créer les tables au démarrage
 with app.app_context():
     db.create_all()
@@ -201,3 +257,186 @@ def recuperer_messages(token):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5050))
     app.run(host='0.0.0.0', port=port, debug=True)
+
+
+# ───────────────────────────────────────────
+#  POST /api/inventaire/<token> — Desktop pousse son inventaire
+# ───────────────────────────────────────────
+@app.route('/api/inventaire/<token>', methods=['POST'])
+def pousser_inventaire(token):
+    import json
+    pairing = Pairing.query.filter_by(token=token).first()
+    if not pairing:
+        return jsonify({'message': 'Token introuvable'}), 404
+
+    data = request.get_json() or {}
+    produits = data.get('produits', [])
+
+    cache = InventaireCache.query.filter_by(token=token).first()
+    if cache:
+        cache.produits   = json.dumps(produits)
+        cache.updated_at = datetime.utcnow()
+    else:
+        cache = InventaireCache(token=token, produits=json.dumps(produits))
+        db.session.add(cache)
+
+    db.session.commit()
+    return jsonify({'message': 'Inventaire mis à jour', 'nb_produits': len(produits)})
+
+# ───────────────────────────────────────────
+#  GET /api/inventaire/<token> — Mobile lit l'inventaire
+# ───────────────────────────────────────────
+@app.route('/api/inventaire/<token>', methods=['GET'])
+def lire_inventaire(token):
+    import json
+    pairing = Pairing.query.filter_by(token=token).first()
+    if not pairing:
+        return jsonify({'message': 'Token introuvable'}), 404
+
+    cache = InventaireCache.query.filter_by(token=token).first()
+    if not cache:
+        return jsonify([])
+
+    return jsonify(json.loads(cache.produits))
+
+# ───────────────────────────────────────────
+#  PUT /api/produits/<token>/<produit_id> — Mobile modifie un produit
+# ───────────────────────────────────────────
+@app.route('/api/produits/<token>/<int:produit_id>', methods=['PUT'])
+def modifier_produit_mobile(token, produit_id):
+    import json
+    pairing = Pairing.query.filter_by(token=token).first()
+    if not pairing:
+        return jsonify({'message': 'Token introuvable'}), 404
+
+    data = request.get_json() or {}
+
+    modif = ModifMobile(
+        token      = token,
+        produit_id = produit_id,
+        data       = json.dumps(data),
+    )
+    db.session.add(modif)
+    db.session.commit()
+
+    # Retourner le produit mis à jour depuis le cache
+    cache = InventaireCache.query.filter_by(token=token).first()
+    if cache:
+        produits = json.loads(cache.produits)
+        for p in produits:
+            if p.get('id') == produit_id:
+                p.update(data)
+                break
+        cache.produits = json.dumps(produits)
+        db.session.commit()
+
+        produit_maj = next((p for p in produits if p.get('id') == produit_id), {})
+        return jsonify(produit_maj)
+
+    return jsonify(data)
+
+# ───────────────────────────────────────────
+#  GET /api/modifs/<token> — Desktop récupère les modifs du mobile
+# ───────────────────────────────────────────
+@app.route('/api/modifs/<token>', methods=['GET'])
+def get_modifs_mobile(token):
+    modifs = ModifMobile.query.filter_by(token=token, appliquee=False).all()
+    for m in modifs:
+        m.appliquee = True
+    db.session.commit()
+    return jsonify([m.to_dict() for m in modifs])
+
+
+# ───────────────────────────────────────────
+#  POST /api/produits/<token> — Desktop envoie ses produits
+# ───────────────────────────────────────────
+@app.route('/api/produits/<token>', methods=['POST'])
+def pousser_produits(token):
+    import json
+    pairing = Pairing.query.filter_by(token=token).first()
+    if not pairing:
+        return jsonify({'message': 'Token introuvable'}), 404
+
+    data = request.get_json() or {}
+    produits_json = json.dumps(data.get('produits', []))
+
+    cache = CacheProduits.query.filter_by(token=token).first()
+    if cache:
+        cache.produits   = produits_json
+        cache.updated_at = datetime.utcnow()
+    else:
+        cache = CacheProduits(token=token, produits=produits_json)
+        db.session.add(cache)
+
+    db.session.commit()
+    return jsonify({'message': 'Produits mis à jour'})
+
+# ───────────────────────────────────────────
+#  GET /api/produits/<token> — Mobile récupère les produits
+# ───────────────────────────────────────────
+@app.route('/api/produits/<token>', methods=['GET'])
+def get_produits_mobile(token):
+    import json
+    pairing = Pairing.query.filter_by(token=token).first()
+    if not pairing:
+        return jsonify({'message': 'Token introuvable'}), 404
+
+    cache = CacheProduits.query.filter_by(token=token).first()
+    if not cache:
+        return jsonify([])
+
+    return jsonify(json.loads(cache.produits))
+
+# ───────────────────────────────────────────
+#  PUT /api/produits/<token>/<id> — Mobile modifie un produit
+# ───────────────────────────────────────────
+@app.route('/api/produits/<token>/<int:produit_id>', methods=['PUT'])
+def modifier_produit_mobile(token, produit_id):
+    import json
+    pairing = Pairing.query.filter_by(token=token).first()
+    if not pairing:
+        return jsonify({'message': 'Token introuvable'}), 404
+
+    data = request.get_json() or {}
+
+    modif = ModifProduit(
+        token      = token,
+        produit_id = produit_id,
+        donnees    = json.dumps(data),
+    )
+    db.session.add(modif)
+    db.session.commit()
+
+    # Mettre à jour aussi le cache local
+    cache = CacheProduits.query.filter_by(token=token).first()
+    if cache:
+        produits = json.loads(cache.produits)
+        for p in produits:
+            if p.get('id') == produit_id:
+                p.update(data)
+                break
+        cache.produits   = json.dumps(produits)
+        cache.updated_at = datetime.utcnow()
+        db.session.commit()
+
+    return jsonify({'message': 'Modification enregistrée', 'produit_id': produit_id})
+
+# ───────────────────────────────────────────
+#  GET /api/modifs/<token> — Desktop récupère les modifications en attente
+# ───────────────────────────────────────────
+@app.route('/api/modifs/<token>', methods=['GET'])
+def get_modifs(token):
+    import json
+    modifs = ModifProduit.query.filter_by(token=token, appliquee=False).all()
+
+    result = []
+    for m in modifs:
+        result.append({
+            'id':         m.id,
+            'produit_id': m.produit_id,
+            'donnees':    json.loads(m.donnees),
+        })
+        m.appliquee = True
+
+    db.session.commit()
+    return jsonify(result)
