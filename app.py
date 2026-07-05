@@ -303,7 +303,7 @@ def lire_inventaire(token):
 #  PUT /api/produits/<token>/<produit_id> — Mobile modifie un produit
 # ───────────────────────────────────────────
 @app.route('/api/produits/<token>/<int:produit_id>', methods=['PUT'])
-def modifier_produit_mobile(token, produit_id):
+def modifier_produit_depuis_mobile(token, produit_id):
     import json
     pairing = Pairing.query.filter_by(token=token).first()
     if not pairing:
@@ -391,7 +391,7 @@ def get_produits_mobile(token):
 #  PUT /api/produits/<token>/<id> — Mobile modifie un produit
 # ───────────────────────────────────────────
 @app.route('/api/produits/<token>/<int:produit_id>', methods=['PUT'])
-def modifier_produit_mobile(token, produit_id):
+def modifier_produit_depuis_mobile(token, produit_id):
     import json
     pairing = Pairing.query.filter_by(token=token).first()
     if not pairing:
