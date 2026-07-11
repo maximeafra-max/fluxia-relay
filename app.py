@@ -306,6 +306,40 @@ def modifier_produit_relay(token, produit_id):
     return jsonify({'message': 'Modification enregistrée', 'produit_id': produit_id})
 
 # ───────────────────────────────────────────
+#  IMAGES PRODUITS
+# ───────────────────────────────────────────
+@app.route('/api/produits/<token>/image', methods=['POST'])
+def upload_image_produit(token):
+    pairing = Pairing.query.filter_by(token=token).first()
+    if not pairing:
+        return jsonify({'message': 'Token introuvable'}), 404
+
+    if 'image' not in request.files:
+        return jsonify({'message': 'Aucun fichier image'}), 400
+
+    fichier    = request.files['image']
+    nom_relatif = request.form.get('nom_relatif')  # ex: "bibliotheque/Nutella.jfif"
+    if not nom_relatif:
+        return jsonify({'message': 'nom_relatif requis'}), 400
+
+    # Sécurité basique : empêcher de sortir du dossier images avec des ../
+    nom_relatif = nom_relatif.replace('..', '').lstrip('/')
+
+    dossier_base = os.path.join(os.path.dirname(__file__), 'static', 'images', 'produits')
+    chemin_complet = os.path.join(dossier_base, nom_relatif)
+    os.makedirs(os.path.dirname(chemin_complet), exist_ok=True)
+
+    fichier.save(chemin_complet)
+    return jsonify({'message': 'Image enregistrée', 'chemin': nom_relatif})
+
+
+@app.route('/static/images/produits/<path:chemin_image>')
+def servir_image_produit(chemin_image):
+    from flask import send_from_directory
+    dossier_base = os.path.join(os.path.dirname(__file__), 'static', 'images', 'produits')
+    return send_from_directory(dossier_base, chemin_image)
+
+# ───────────────────────────────────────────
 #  MODIFICATIONS EN ATTENTE (desktop récupère)
 # ───────────────────────────────────────────
 @app.route('/api/modifs/<token>', methods=['GET'])
