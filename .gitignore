@@ -15,3 +15,5 @@ Thumbs.db
 
 # Variables d'environnement sensibles
 .env
+
+firebase-adminsdk*.json

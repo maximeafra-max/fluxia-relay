@@ -9,8 +9,26 @@ import secrets
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
+import firebase_admin
+from firebase_admin import credentials, messaging
 
 app = Flask(__name__)
+
+# ───────────────────────────────────────────
+#  FIREBASE ADMIN SDK
+# ───────────────────────────────────────────
+firebase_pret = False
+try:
+    firebase_creds_json = os.environ.get('FIREBASE_CREDENTIALS')
+    if firebase_creds_json:
+        cred = credentials.Certificate(json.loads(firebase_creds_json))
+        firebase_admin.initialize_app(cred)
+        firebase_pret = True
+        print('[Relay] Firebase Admin initialisé ✓')
+    else:
+        print('[Relay] FIREBASE_CREDENTIALS absent — notifications push désactivées')
+except Exception as e:
+    print(f'[Relay] Erreur initialisation Firebase: {e}')
 
 # ───────────────────────────────────────────
 #  CORS
@@ -49,6 +67,7 @@ class Pairing(db.Model):
     mobile_id    = db.Column(db.String(100), nullable=True)
     boutique_nom = db.Column(db.String(200), default='Ma Boutique')
     connecte     = db.Column(db.Boolean, default=False)
+    fcm_token    = db.Column(db.String(300), nullable=True)
     created_at   = db.Column(db.DateTime, default=datetime.utcnow)
 
     def to_dict(self):
@@ -99,6 +118,15 @@ class ModifProduit(db.Model):
 
 with app.app_context():
     db.create_all()
+
+    # Migration légère : ajoute la colonne fcm_token si elle n'existe pas déjà
+    try:
+        db.session.execute(db.text('ALTER TABLE pairings ADD COLUMN fcm_token VARCHAR(300)'))
+        db.session.commit()
+        print('[Relay] Colonne fcm_token ajoutée ✓')
+    except Exception:
+        db.session.rollback()
+        # La colonne existe déjà (ou autre souci mineur) — on ignore silencieusement
 
 # ───────────────────────────────────────────
 #  ROUTE DE TEST
@@ -161,7 +189,52 @@ def envoyer_message(token):
     )
     db.session.add(message)
     db.session.commit()
+
+    # Envoyer un vrai push FCM en plus (si le mobile a un token enregistré)
+    envoyer_push_fcm(pairing, data.get('titre', 'Notification'), data.get('type', 'info'), data.get('contenu', {}))
+
     return jsonify(message.to_dict()), 201
+
+
+def envoyer_push_fcm(pairing, titre, type_event, contenu):
+    if not firebase_pret or not pairing.fcm_token:
+        return
+
+    # Construire un corps de notification lisible selon le type
+    if type_event == 'vente':
+        corps = f"{contenu.get('nb_articles', 0)} article(s) — {contenu.get('montant', 0)} KMF"
+    elif type_event == 'cloture':
+        corps = f"CA : {contenu.get('total_ca', 0)} KMF — {contenu.get('nb_transactions', 0)} ventes"
+    elif type_event == 'stock_faible':
+        corps = contenu.get('message', '')
+    else:
+        corps = ''
+
+    try:
+        message = messaging.Message(
+            notification=messaging.Notification(title=titre, body=corps),
+            data={'type': type_event},
+            token=pairing.fcm_token,
+        )
+        messaging.send(message)
+    except Exception as e:
+        print(f'[Relay] Échec envoi push FCM: {e}')
+
+
+@app.route('/api/fcm-token/<token>', methods=['POST'])
+def enregistrer_fcm_token(token):
+    pairing = Pairing.query.filter_by(token=token).first()
+    if not pairing:
+        return jsonify({'message': 'Token introuvable'}), 404
+
+    data      = request.get_json() or {}
+    fcm_token = data.get('fcm_token')
+    if not fcm_token:
+        return jsonify({'message': 'fcm_token requis'}), 400
+
+    pairing.fcm_token = fcm_token
+    db.session.commit()
+    return jsonify({'message': 'Token FCM enregistré'})
 
 
 @app.route('/api/messages/<token>', methods=['GET'])
